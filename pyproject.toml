@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tactivision"
+version = "0.1.0"
+description = "Frame-by-frame soccer ball detection and SoccerTrack-v2 pitch projection"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24,<3", "opencv-python>=4.10,<5"]
+
+[project.optional-dependencies]
+detect = ["ultralytics>=8.4.0,<9"]
+data = ["huggingface-hub>=0.27,<2"]
+test = ["pytest>=8"]
+
+[project.scripts]
+tactivision = "tactivision.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
