@@ -38,7 +38,7 @@ def suppress_duplicates(detections: list[Detection], iou: float = .4) -> list[De
 
 class BallDetector:
     def __init__(self, weights, confidence=.15, imgsz=1024,
-                 tile_size=1024, overlap=.2, device="cpu", class_id=None):
+                 tile_size=1024, overlap=.2, device="cpu", class_id=None, focus_region=None):
         if not 0 < confidence <= 1 or imgsz <= 0 or tile_size < 0 or not 0 <= overlap < 1:
             raise ValueError("Invalid confidence, image size, tile size or overlap")
         if not Path(weights).is_file():
@@ -57,8 +57,19 @@ class BallDetector:
         self.class_id = class_id
         self.confidence, self.imgsz = confidence, imgsz
         self.tile_size, self.overlap, self.device = tile_size, overlap, device
+        self.focus_region = focus_region
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
+        original_height, original_width = frame.shape[:2]
+        offset_x = offset_y = 0
+        if self.focus_region is not None:
+            low = np.floor(self.focus_region.vertices.min(axis=0) - 32).astype(int)
+            high = np.ceil(self.focus_region.vertices.max(axis=0) + 32).astype(int)
+            offset_x, offset_y = max(0, int(low[0])), max(0, int(low[1]))
+            right, bottom = min(original_width, int(high[0])), min(original_height, int(high[1]))
+            if offset_x >= right or offset_y >= bottom:
+                raise ValueError("Playing region does not overlap the input image")
+            frame = frame[offset_y:bottom, offset_x:right]
         height, width = frame.shape[:2]
         tile = self.tile_size or max(width, height)
         candidates = []
@@ -73,8 +84,9 @@ class BallDetector:
                     continue
                 for box, score in zip(result.boxes.xyxy.cpu().numpy(), result.boxes.conf.cpu().numpy()):
                     x1, y1, x2, y2 = box.tolist()
-                    xyxy = (max(0., x1 + left), max(0., y1 + top),
-                            min(float(width), x2 + left), min(float(height), y2 + top))
+                    xyxy = (max(float(offset_x), x1 + left + offset_x), max(float(offset_y), y1 + top + offset_y),
+                            min(float(offset_x + width), x2 + left + offset_x),
+                            min(float(offset_y + height), y2 + top + offset_y))
                     if xyxy[2] > xyxy[0] and xyxy[3] > xyxy[1] and np.isfinite([*xyxy, score]).all():
                         candidates.append(Detection(xyxy, float(score)))
         return suppress_duplicates(candidates)

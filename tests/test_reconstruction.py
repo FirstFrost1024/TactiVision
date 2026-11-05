@@ -111,6 +111,27 @@ def test_yolo_tiles_restore_full_resolution_coordinates(monkeypatch, tmp_path):
     assert detector.model.calls[0][1]["classes"] == [0]
 
 
+def test_yolo_focus_crop_restores_original_image_coordinates(monkeypatch, tmp_path):
+    class Tensor:
+        def __init__(self, value): self.value=np.array(value)
+        def cpu(self): return self
+        def numpy(self): return self.value
+    class Model:
+        names={0:"ball"}
+        def __init__(self, weights): self.shape=None
+        def predict(self, crop, **kwargs):
+            self.shape=crop.shape
+            return [SimpleNamespace(boxes=SimpleNamespace(xyxy=Tensor([[20,30,30,40]]),conf=Tensor([.9])))]
+    from tactivision.region import PitchRegion
+    monkeypatch.setitem(sys.modules,"ultralytics",SimpleNamespace(YOLO=Model))
+    weights=tmp_path/'local.pt';weights.touch()
+    region=PitchRegion([[200,100],[300,100],[300,200],[200,200]])
+    detector=BallDetector(weights,tile_size=512,focus_region=region)
+    detections=detector.detect(np.zeros((300,400,3),dtype=np.uint8))
+    assert detector.model.shape==(164,164,3)
+    assert detections[0].xyxy==(188,98,198,108)
+
+
 def candidate(x, y, confidence=.8):
     return Candidate(Detection((0, 0, 4, 4), confidence), np.array([x, y], dtype=float))
 

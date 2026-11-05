@@ -225,7 +225,7 @@ python -u -m tactivision batch \
 mkdir -p outputs/all_matches
 nohup python -u -m tactivision batch \
   --weights models/yolo26x.pt --devices 0 1 \
-  --imgsz 1024 --tile-size 1024 --overlap 0.2 --cpu-threads 24 \
+  --imgsz 1024 --tile-size 1024 --overlap 0.2 --cpu-threads 24 --preview \
   --output outputs/all_matches \
   >> outputs/all_matches/batch.log 2>&1 < /dev/null &
 ```
@@ -310,6 +310,100 @@ kill -TERM "$TACTIVISION_BATCH_PID"
 只有输入视频、标定、权重、推理参数、实现文件和输出哈希均匹配的完成任务才会跳过。**未完成或失败的半场从第一帧重新处理，不支持在半场内部接着上次的帧号继续。** 修改上述输入、参数或实现文件会使相关完成结果重新计算；短测结果不会被当作整半场完成。程序会核对解码帧数，提前解码中断时不会写入完成标记。单个半场失败后继续其他视频，并在批处理结束时返回非零退出码；失败原因见该半场的 `processing.log`。
 
 状态文件中的时间采用 UTC。
+
+## 比赛用球选择修正与候选缓存
+
+新版默认使用 `--pitch-region keypoints --focus-pitch --save-candidates`：
+
+- 按官方关键点在输入图像中构成比赛区域多边形，保留鱼眼画面弯曲边线。直接读取官方文件，不重新拟合或修改标定。
+- 新关联段从场内候选开始，避免高置信度场边备用球抢占目标。已建立轨迹可以在通过距离门限的条件下，出界后继续最多 `--off-field-grace 1.0` 秒；界外坐标保留原值。
+- 持续在场外 4 px 邻域中静止至少 `--outside-static-seconds 1.0` 秒的候选被抑制；场内静止球不受此规则影响。短时丢失仍然输出空坐标，长时间出界和跨出区域轮廓的高球可能漏记。
+- 默认在比赛区域包围框及其 32 px 边缘内切片检测，框坐标转换回原视频像素。可用 `--no-focus-pitch` 恢复整幅全景检测。
+
+小球较远时可采用 `--tile-size 512 --imgsz 1024`，让小球在网络输入中放大；相较 1024 切片会增加计算量。验证和重建新版结果时使用新的输出目录，方便与旧结果对照：
+
+```bash
+# 先检查一段已知包含比赛用球的片段，生成检测预览和候选缓存
+python -m tactivision run \
+  --match 117093 \
+  --video datasets/SoccerTrack-v2/data/videos/117093/117093_panorama_1st_half.mp4 \
+  --weights models/yolo26x.pt --device 0 \
+  --start-frame 33800 --max-frames 200 \
+  --tile-size 512 --imgsz 1024 --preview \
+  --output outputs/selection_validation/117093_v2
+
+# 短片抽检通过后，双卡重建全部比赛
+python -m tactivision batch \
+  --weights models/yolo26x.pt --devices 0 1 \
+  --tile-size 512 --imgsz 1024 --overlap 0.2 \
+  --output outputs/all_matches_v2
+```
+
+`--pitch-region none --no-focus-pitch` 可用于无区域约束的对照实验。区域约束和候选筛选只能改善目标选择；检测器未检出比赛用球时，仍需改进检测模型或训练足球专项权重，不能由备用球补齐轨迹。场内比例和覆盖率都不能作为真实检测准确率。
+
+默认在每个结果目录保存 `candidates.jsonl.gz` 和 `candidates_meta.json`，记录**当前检测设置下的全部原始候选框**，在比赛用球筛选之前写入；完成请求帧数后发布，并记录源视频、帧范围、检测参数、检测区域和校验值。可用 `--no-save-candidates` 关闭。旧版结果仅保存被选中的一个目标，无法从旧 CSV 恢复未保存的候选，需重新检测一次才能生成缓存。
+
+之后调整关联规则，可直接复用同一个短片缓存：
+
+```bash
+python -m tactivision run \
+  --match 117093 \
+  --video datasets/SoccerTrack-v2/data/videos/117093/117093_panorama_1st_half.mp4 \
+  --weights models/yolo26x.pt --device cpu \
+  --candidate-cache outputs/selection_validation/117093_v2 \
+  --start-frame 33800 --max-frames 200 \
+  --off-field-grace 1.0 --outside-static-seconds 1.0 --preview \
+  --output outputs/selection_validation/117093_replay
+```
+
+缓存复关联会解码视频并在 CPU 上执行关联、投影和可选预览，不再次加载或运行 YOLO。缓存不能补回低于原检测阈值、原检测区域之外或原帧范围之外的候选；输入视频、权重和图像坐标空间必须匹配。修改 `--imgsz` 或 `--tile-size` 不能改变缓存里的已有检测结果，摘要会保留原检测来源。完整比赛缓存从第 0 帧开始时，可以省略 `--start-frame` 和 `--max-frames`。
+
+新版全量完成后生成对应的质量报告：
+
+```bash
+python -m tactivision review \
+  --input outputs/all_matches_v2 --output outputs/review_v2 \
+  --samples 4 --clip-seconds 4
+```
+
+新增 CSV 列 `playing_candidate_count` 为该帧原始候选中落在图像比赛区域内的数量，`selected_in_playing_region` 表示被选中的像素是否位于该区域；它与 `in_pitch`（米制投影是否位于球场矩形内）分别记录。
+
+## 重建完成后的轨迹可视化与质量检查
+
+在 Conda 环境中执行以下命令，直接读取已保存的结果，无需再次加载 YOLO 或运行 GPU 推理：
+
+```bash
+conda activate tactivision
+python -m tactivision review \
+  --input outputs/all_matches \
+  --output outputs/review \
+  --samples 4 --clip-seconds 4
+```
+
+每个半场会核对完成标记中的输出 SHA-256、CSV 行数、连续帧号、时间戳、检测值和汇总计数，统计检测覆盖率、投影位置的界外比例、像素静止段及缺失段。原始 CSV 和官方标定保持原样，轨迹不插值、不平滑。短片解码和绘制使用 CPU；本机有 FFmpeg 时转为 H.264 方便浏览器播放，否则保留 OpenCV 的 MP4 编码。`--clip-seconds 0` 可只生成图像。
+
+```text
+outputs/review/
+  index.html                       # 可在本机浏览器打开的离线交互报告
+  quality_report.json              # 全部半场的核验结果和统计
+  quality_summary.csv              # 每个半场一行的汇总
+  117093/1st/
+    contact_sheet.jpg              # 多个时刻的原视频、选中目标及局部放大
+    trajectory.svg                 # 球场米制坐标图（最多抽样 1000 点）
+    review.mp4                     # 最长像素静止段附近的抽检短片
+    metrics.json
+```
+
+报告可以直接打开 `outputs/review/index.html`，也可以用本机 HTTP 服务查看：
+
+```bash
+python -m http.server 8765 --bind 127.0.0.1 --directory outputs/review
+# 浏览器打开 http://127.0.0.1:8765/
+```
+
+**检测覆盖率不等于比赛用球跟踪准确率。** 通用 `sports ball` 检测器也会检测场边备用球；简单的置信度和距离关联可能长期锁定静止球。`stationary_target_30s` 表示同轨连续像素中心距段起点不超过 2 px 且持续至少 30 秒，`mostly_outside_pitch` 表示至少一半已选位置投影到球场外，`dominant_4px_cell` 表示至少一半已选像素落在同一个 4×4 px 格子，`gap_2s` 表示缺失至少 2 秒。这些标记用于安排复查，不能直接当作误检标签。
+
+本次全量检查已在抽检画面中观察到部分半场长期选中场边静止球。应先结合抽检图和视频核实目标选择，再决定是否增加比赛区域约束、静态候选抑制或比赛用球专项模型。没有独立人工足球标注时，不报告精确率、召回率和真实米制定位精度；辅助 `ball/` 插值轨迹不作为逐帧检测真值。
 
 ## 坐标与状态
 

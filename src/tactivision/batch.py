@@ -21,7 +21,7 @@ from .calibration import Calibration
 from .pipeline import file_hash, reconstruct
 
 
-BATCH_VERSION = 1
+BATCH_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -117,7 +117,7 @@ def fingerprint(job, config):
     value = {"version": BATCH_VERSION, "video": job.video, "video_size": stat.st_size,
              "video_mtime_ns": stat.st_mtime_ns, "frames": job.frames, "calibration": files, "settings": settings,
              "implementation": {name: file_hash(Path(__file__).parent / name) for name in (
-                 "batch.py", "pipeline.py", "calibration.py", "detector.py", "tracking.py", "render.py")}}
+                 "batch.py", "pipeline.py", "calibration.py", "detector.py", "tracking.py", "render.py", "region.py", "candidate_cache.py")}}
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
@@ -130,6 +130,8 @@ def is_complete(job, signature, preview=False):
         required = ["ball_positions.csv", "summary.json", "calibration_report.json"]
         if preview:
             required.append("reconstruction.mp4")
+        if any(name in marker["sha256"] for name in ("candidates.jsonl.gz", "candidates_meta.json")):
+            required.extend(("candidates.jsonl.gz", "candidates_meta.json"))
         return all((output / name).is_file() and (output / name).stat().st_size > 0
                    and file_hash(output / name) == marker["sha256"][name] for name in required)
     except (OSError, ValueError, KeyError, TypeError):
@@ -151,15 +153,25 @@ def process_job(job, detector, config, signature, device):
                   "weights": config["weights"], "weights_sha256": config["weights_sha256"],
                   "class_id": detector.class_id, "batch_signature": signature,
                   **{key: config[key] for key in ("confidence", "imgsz", "tile_size", "overlap")}}
+    from .region import PitchRegion
+    region = (PitchRegion.load(Path(job.calibration_dir) / f"{job.match}_keypoints.json", calibration, config["space"])
+              if config.get("pitch_region", "keypoints") == "keypoints" else None)
+    detector.focus_region = region if config.get("focus_pitch", True) else None
+    provenance["focus_pitch"] = detector.focus_region is not None
     summary = reconstruct(job.video, calibration, detector, output,
                           **{key: config[key] for key in ("space", "max_frames", "preview", "max_speed", "gate_slack", "reset_after")},
-                          calibration_size=job.image_size, provenance=provenance)
+                          calibration_size=job.image_size, provenance=provenance, pitch_region=region,
+                          off_field_grace=config.get("off_field_grace", 1.),
+                          static_seconds=config.get("outside_static_seconds", 1.),
+                          save_candidates=config.get("save_candidates", True))
     expected = min(job.frames, config["max_frames"]) if config["max_frames"] else job.frames
     if summary["frames"] != expected:
         raise ValueError(f"Incomplete decode: expected {expected} frames, received {summary['frames']}; not marked complete")
     files = ["ball_positions.csv", "summary.json", "calibration_report.json"]
     if config["preview"]:
         files.append("reconstruction.mp4")
+    if config.get("save_candidates", True):
+        files.extend(("candidates.jsonl.gz", "candidates_meta.json"))
     write_json(output / "completed.json", {"signature": signature, "finished_at": stamp(),
                "frames": summary["frames"], "sha256": {name: file_hash(output / name) for name in files}})
     return {"frames": summary["frames"], "detected": summary["detected"]}
@@ -283,7 +295,8 @@ def run_batch(args):
         raise FileNotFoundError(f"Local detector weights missing: {weights}")
     visible = validate_devices(args.devices)
     keys = ("confidence", "class_id", "imgsz", "tile_size", "overlap", "space", "max_frames", "preview",
-            "max_speed", "gate_slack", "reset_after", "pitch_length", "pitch_width", "cpu_threads")
+            "max_speed", "gate_slack", "reset_after", "pitch_length", "pitch_width", "cpu_threads",
+            "pitch_region", "off_field_grace", "outside_static_seconds", "save_candidates", "focus_pitch")
     config = {key: getattr(args, key) for key in keys}
     config.update(weights=str(weights), weights_sha256=file_hash(weights))
     root = Path(args.output).resolve()

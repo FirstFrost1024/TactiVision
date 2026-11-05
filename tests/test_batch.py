@@ -86,6 +86,19 @@ def test_short_smoke_cannot_skip_full_video(tmp_path):
     assert not batch.is_complete(job, batch.fingerprint(job, config))
 
 
+def test_completed_candidate_cache_is_covered_by_batch_integrity(tmp_path):
+    dataset=dataset_fixture(tmp_path)
+    job=batch.discover_jobs(dataset,tmp_path/'out')[0]
+    config=config_fixture(tmp_path)
+    signature=batch.fingerprint(job,config)
+    batch.process_job(job,SimpleNamespace(detect=lambda frame:[],class_id=32),config,signature,'0')
+    assert batch.is_complete(job,signature)
+    cache=Path(job.output)/'candidates.jsonl.gz'
+    assert cache.exists()
+    with cache.open('ab') as stream:stream.write(b'changed')
+    assert not batch.is_complete(job,signature)
+
+
 def test_truncated_decode_not_marked_complete(tmp_path, monkeypatch):
     dataset = dataset_fixture(tmp_path)
     job = batch.discover_jobs(dataset, tmp_path / "out")[0]

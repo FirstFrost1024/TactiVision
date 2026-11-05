@@ -7,16 +7,19 @@ import numpy as np
 
 
 class Preview:
-    def __init__(self, calibration, fps):
+    def __init__(self, calibration, fps, region=None):
         self.calibration = calibration
         self.trail = deque(maxlen=max(1, round(fps * 2)))
         self.previous_track = None
+        self.region = region
 
     def draw(self, frame, row):
         width = 1280
         video_height = round(frame.shape[0] * width / frame.shape[1] / 2) * 2
         canvas = np.full((video_height + 480, width, 3), (27, 24, 20), dtype=np.uint8)
         image = frame.copy()
+        if self.region is not None:
+            cv2.polylines(image, [np.rint(self.region.vertices).astype(np.int32)], True, (110, 200, 130), 1, cv2.LINE_AA)
         detected = row["status"] == "detected"
         if detected:
             box = [int(round(row[k])) for k in ("bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2")]
