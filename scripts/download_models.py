@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Download selected official YOLO detection weights; Python standard library only.
 
+Run after activating the project's Conda environment: conda activate tactivision.
+
 Usage:
     python scripts/download_models.py
     python scripts/download_models.py --models yolo26l yolo26m

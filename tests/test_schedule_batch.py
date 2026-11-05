@@ -6,6 +6,7 @@ import importlib.util
 from pathlib import Path
 import signal
 import subprocess
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -16,6 +17,15 @@ spec = importlib.util.spec_from_file_location(
 scheduler = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(scheduler)
 ZONE = ZoneInfo("Asia/Shanghai")
+
+
+@pytest.fixture
+def conda_runtime(tmp_path, monkeypatch):
+    prefix = tmp_path / "envs" / "tactivision"
+    (prefix / "conda-meta").mkdir(parents=True)
+    executable = prefix / "bin" / "python"
+    monkeypatch.setattr(scheduler, "sys", SimpleNamespace(prefix=str(prefix), executable=str(executable)))
+    return executable
 
 
 def at(day, hour, minute):
@@ -120,7 +130,7 @@ def test_timeout_kills_entire_batch_group(monkeypatch):
     assert calls == [(process.pid, signal.SIGKILL), "reaped"]
 
 
-def test_dry_run_preserves_corrected_selection_and_creates_nothing(tmp_path, capsys):
+def test_dry_run_preserves_corrected_selection_and_creates_nothing(tmp_path, capsys, conda_runtime):
     output = tmp_path / "unused"
     scheduler.main(["--output", str(output), "--dry-run"])
     text = capsys.readouterr().out
@@ -128,10 +138,21 @@ def test_dry_run_preserves_corrected_selection_and_creates_nothing(tmp_path, cap
     assert "--devices 0 1" in text and "--tile-size 512" in text
     assert "--pitch-region keypoints --focus-pitch" in text
     assert "--save-candidates" in text
+    assert str(conda_runtime) in text
     assert not output.exists()
 
 
-def test_duplicate_scheduler_is_rejected_without_launch(tmp_path, monkeypatch):
+def test_non_conda_python_is_rejected_without_creating_outputs(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(scheduler, "sys", SimpleNamespace(prefix=str(tmp_path), executable="/other/python"))
+    output = tmp_path / "unused"
+    with pytest.raises(SystemExit) as error:
+        scheduler.main(["--output", str(output), "--dry-run"])
+    assert error.value.code == 2
+    assert "conda activate tactivision" in capsys.readouterr().err
+    assert not output.exists()
+
+
+def test_duplicate_scheduler_is_rejected_without_launch(tmp_path, monkeypatch, conda_runtime):
     weights = tmp_path / "fake.pt"
     weights.touch()
     def forbidden(*args, **kwargs):

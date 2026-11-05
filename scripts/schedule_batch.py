@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the corrected dual-GPU batch in a daily daytime window (Linux)."""
+"""Run the corrected dual-GPU batch from an activated Conda environment (Linux)."""
 
 import argparse
 from datetime import datetime, time, timedelta
@@ -47,8 +47,15 @@ def project_path(path):
     return (PROJECT_ROOT / path).resolve()
 
 
+def conda_python():
+    if not (Path(sys.prefix) / "conda-meta").is_dir():
+        raise RuntimeError("请先执行 conda activate tactivision，再使用 python 运行此脚本")
+    # Use Conda's interpreter directly so signals reach batch without a wrapper process.
+    return sys.executable
+
+
 def batch_command(args):
-    command = [sys.executable, "-u", "-m", "tactivision", "batch",
+    command = [conda_python(), "-u", "-m", "tactivision", "batch",
                "--dataset", str(project_path(args.dataset)),
                "--weights", str(project_path(args.weights)),
                "--output", str(project_path(args.output)),
@@ -145,7 +152,10 @@ def main(argv=None):
         zone = ZoneInfo(args.timezone)
     except ZoneInfoNotFoundError:
         p.error(f"未知时区：{args.timezone}")
-    command = batch_command(args)
+    try:
+        command = batch_command(args)
+    except RuntimeError as error:
+        p.error(str(error))
     current = datetime.now(zone)
     active, next_start = window_at(current, args.start, args.stop)
     print(f"每天 {args.start:%H:%M}–{args.stop:%H:%M}，时区 {zone.key}；"

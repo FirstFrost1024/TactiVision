@@ -317,21 +317,23 @@ kill -TERM "$TACTIVISION_BATCH_PID"
 
 脚本已包含比赛用球选择修正：`--pitch-region keypoints --focus-pitch --outside-static-seconds 1.0 --off-field-grace 1.0 --save-candidates`，默认双卡 `0 1`、512 切片、1024 推理尺寸，输出为 `outputs/all_matches_v2`。无需额外打开“选择修正”开关。已完成且核验匹配的半场会跳过；**16:30 被中断的半场次日从第一帧重算，不支持帧级续跑**。当天提前完成或报错退出后，脚本等待次日，不在同一天反复重启。
 
-以下命令在项目根目录执行。本机当前 `.venv/bin/python` 已有 PyTorch 和 Ultralytics，使用它可避免误用其他 Conda 环境；如果使用自行配置的 `tactivision` 环境，将 `.venv/bin/python` 换为该环境的 Python。批处理自动使用启动定时脚本的同一个 Python。
+以下命令统一在项目根目录、激活 `tactivision` Conda 环境后执行。尚未创建该环境时，先按前面的“创建并激活环境”步骤执行 `conda env create -f environment.yml`。脚本会检查当前 Python 是否属于 Conda 环境，并让批处理直接使用同一个 Conda Python，保证停止信号直接送达批处理父进程。
 
 ```bash
 cd /home/jerry/Demo/TactiVision
+conda activate tactivision
 
 # 只检查时间设置和将要执行的命令，不启动任务、不写结果
-.venv/bin/python scripts/schedule_batch.py --dry-run
+python scripts/schedule_batch.py --dry-run
 ```
 
 准备好后，**手动执行下面整个代码块才会启用定时任务**：
 
 ```bash
 cd /home/jerry/Demo/TactiVision
+conda activate tactivision
 mkdir -p outputs/all_matches_v2
-nohup .venv/bin/python -u scripts/schedule_batch.py \
+nohup python -u scripts/schedule_batch.py \
   >> outputs/all_matches_v2/schedule.log 2>&1 < /dev/null &
 ```
 
