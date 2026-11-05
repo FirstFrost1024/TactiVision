@@ -311,6 +311,51 @@ kill -TERM "$TACTIVISION_BATCH_PID"
 
 状态文件中的时间采用 UTC。
 
+### 6. 手动启用每日 08:30–16:30 双卡任务
+
+定时脚本为 `scripts/schedule_batch.py`，**只在你手动运行后生效**，不会注册 cron、系统服务或开机自启。默认按北京时间 `Asia/Shanghai` 每天（含周末）08:30 启动，16:30 向批处理父进程发送 SIGTERM，等待其清理双卡子进程；超过 60 秒仍未退出会强制清理本次批处理的整个进程组。窗口判断约每秒一次。第二天 08:30 使用相同参数和目录重新运行。
+
+脚本已包含比赛用球选择修正：`--pitch-region keypoints --focus-pitch --outside-static-seconds 1.0 --off-field-grace 1.0 --save-candidates`，默认双卡 `0 1`、512 切片、1024 推理尺寸，输出为 `outputs/all_matches_v2`。无需额外打开“选择修正”开关。已完成且核验匹配的半场会跳过；**16:30 被中断的半场次日从第一帧重算，不支持帧级续跑**。当天提前完成或报错退出后，脚本等待次日，不在同一天反复重启。
+
+以下命令在项目根目录执行。本机当前 `.venv/bin/python` 已有 PyTorch 和 Ultralytics，使用它可避免误用其他 Conda 环境；如果使用自行配置的 `tactivision` 环境，将 `.venv/bin/python` 换为该环境的 Python。批处理自动使用启动定时脚本的同一个 Python。
+
+```bash
+cd /home/jerry/Demo/TactiVision
+
+# 只检查时间设置和将要执行的命令，不启动任务、不写结果
+.venv/bin/python scripts/schedule_batch.py --dry-run
+```
+
+准备好后，**手动执行下面整个代码块才会启用定时任务**：
+
+```bash
+cd /home/jerry/Demo/TactiVision
+mkdir -p outputs/all_matches_v2
+nohup .venv/bin/python -u scripts/schedule_batch.py \
+  >> outputs/all_matches_v2/schedule.log 2>&1 < /dev/null &
+```
+
+08:30 前启动会等待当天 08:30；08:30（含）至 16:30（不含）启动会立即处理；16:30 后启动会等待次日。关闭终端后定时脚本继续运行，电脑重启后需手动重新启用。请保持电脑开机且不休眠。不要同时启动指向该输出目录的前台/后台批处理；脚本的 `schedule.lock` 防止重复调度，批处理的 `batch.lock` 防止并发写入结果。
+
+```bash
+# 查看定时启停记录，按 Ctrl+C 仅退出日志查看
+tail -F outputs/all_matches_v2/schedule.log
+
+# 查看双卡重建进度
+tail -F outputs/all_matches_v2/batch.log
+```
+
+手动关闭定时任务（也会停止它正在运行的双卡批处理）：
+
+```bash
+TACTIVISION_SCHEDULE_PID=$(cat outputs/all_matches_v2/schedule.pid)
+ps -p "$TACTIVISION_SCHEDULE_PID" -o pid,etime,args
+# 确认上面的命令为 scripts/schedule_batch.py 后执行
+kill -TERM "$TACTIVISION_SCHEDULE_PID"
+```
+
+停止定时脚本后不会在第二天自动重启；再次执行 `nohup` 代码块即可重新启用。只停止 batch 父进程会保留定时脚本，它仍将在次日启动。可通过 `--start 08:30 --stop 16:30 --timezone Asia/Shanghai` 调整窗口，`--cpu-threads 24` 调整每卡 CPU 线程，`--preview` 额外生成预览；重新启用时保持参数一致，避免完成标记失配而重算。
+
 ## 比赛用球选择修正与候选缓存
 
 新版默认使用 `--pitch-region keypoints --focus-pitch --save-candidates`：
